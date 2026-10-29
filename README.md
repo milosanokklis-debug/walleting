@@ -107,6 +107,28 @@ Mailpit accepts any recipient domain, so the generated `@authagent.test` address
 unreachable the email step is reported as a SKIP with a clear message (it does not hang). Other mail systems can plug
 in by implementing `authagent.mail.EmailProvider` (`reachable()` and `latest_message()`).
 
+## Email verification for your own remote sites: Cloudflare Email Worker
+
+Only for sites you own, on a domain you own. Cloudflare Email Routing sends every address on the domain to a small
+Email Worker (`cloudflare/mail-worker/`) that stores mail in D1 (1 hour retention) and serves the newest message per
+recipient at `GET /latest?to=` behind a bearer token. authagent signs up as `agent-xxxx@yourdomain` and polls it.
+
+1. Add your domain to Cloudflare.
+2. Enable Email Routing for it (Email > Email Routing).
+3. `cd cloudflare/mail-worker && npm install`, then `npx wrangler d1 create authagent-mail` and paste the printed
+   `database_id` into `wrangler.toml`. Then `npx wrangler d1 execute authagent-mail --remote --file schema.sql`.
+4. `npx wrangler secret put API_TOKEN` (pick a long random value), then `npx wrangler deploy`.
+5. In Email Routing, set the catch-all rule to "Send to a Worker" and choose `authagent-mail`.
+6. Add the worker host (e.g. `authagent-mail.<you>.workers.dev`) and your remote site to `user_hosts` in
+   `config/allowlist.yaml`. Verification links to non-allowlisted hosts are never followed.
+7. In `.env`: `MAIL_PROVIDER=cloudflare`, `MAIL_DOMAIN=yourdomain`, `MAIL_API_URL=https://authagent-mail...workers.dev`,
+   `MAIL_API_TOKEN=<the token>`. The token is registered for redaction.
+
+Local smoke test: put `API_TOKEN=x` in `cloudflare/mail-worker/.dev.vars` (gitignored), run `npx wrangler d1 execute
+authagent-mail --local --file schema.sql` and `npx wrangler dev --local`, POST a `.eml` to
+`/cdn-cgi/handler/email?from=a@x.com&to=agent-x@yourdomain`, then `curl -H "Authorization: Bearer x"
+'localhost:8787/latest?to=agent-x@yourdomain'`.
+
 ## Secrets and git
 
 Generated credentials are written only to `.env.test` (see `.env.test.example` for the keys) and are redacted from stdout,

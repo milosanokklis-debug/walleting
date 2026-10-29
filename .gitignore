@@ -19,3 +19,5 @@ auth.json
 venv/
 *.log
 logs/
+.wrangler/
+.dev.vars

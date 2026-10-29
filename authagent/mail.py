@@ -22,6 +22,26 @@ OTP_CTX = re.compile(r"(?:code|otp|pin|passcode|password)\D{0,40}?\b(\d{4,8})\b"
 CODE_FIELD = re.compile(r"code|otp|pin|token", re.I)
 
 
+class MailConfigError(ValueError):
+    """Mail provider misconfigured (unknown provider, missing URL/token, token refused). Not a transient outage."""
+
+
+def _poll(fetch, timeout, interval):
+    """Call fetch() until it returns a message or the deadline passes; transient HTTP/JSON errors are retried."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            m = fetch()
+            if m:
+                return m
+        except (requests.RequestException, ValueError) as e:
+            if isinstance(e, MailConfigError):
+                raise
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(interval)
+
+
 class EmailProvider(ABC):
     """Future providers (e.g. IMAP catch-all) implement just these two methods."""
 
@@ -51,19 +71,57 @@ class MailpitProvider(EmailProvider):
             return False
 
     def latest_message(self, to_address, timeout=30, interval=1.0):
-        deadline = time.monotonic() + timeout
-        while True:
-            try:
-                msgs = self._get("/api/v1/search?query=" + quote(f"to:{to_address}", safe="")).get("messages") or []
-                if msgs:
-                    m = max(msgs, key=lambda x: x.get("Created", ""))
-                    full = self._get("/api/v1/message/" + quote(str(m["ID"]), safe=""))
-                    return {"subject": full.get("Subject", ""), "text": full.get("Text") or "", "html": full.get("HTML") or ""}
-            except requests.RequestException:
-                pass  # transient; keep polling until the deadline
-            if time.monotonic() >= deadline:
-                return None
-            time.sleep(interval)
+        def fetch():
+            msgs = self._get("/api/v1/search?query=" + quote(f"to:{to_address}", safe="")).get("messages") or []
+            if msgs:
+                m = max(msgs, key=lambda x: x.get("Created", ""))
+                full = self._get("/api/v1/message/" + quote(str(m["ID"]), safe=""))
+                return {"subject": full.get("Subject", ""), "text": full.get("Text") or "", "html": full.get("HTML") or ""}
+        return _poll(fetch, timeout, interval)
+
+
+class CloudflareWorkerProvider(EmailProvider):
+    """Reads mail from the Cloudflare Email Worker in cloudflare/mail-worker (bearer-token HTTP API)."""
+
+    def __init__(self, base, token):
+        if not base or not token:
+            raise MailConfigError("MAIL_PROVIDER=cloudflare needs MAIL_API_URL and MAIL_API_TOKEN in .env")
+        self.base = base.rstrip("/")
+        host = check_url(self.base)  # the worker host must be allowlisted (user_hosts)
+        if urlsplit(self.base).scheme != "https" and host not in ("localhost", "127.0.0.1"):
+            raise MailConfigError("MAIL_API_URL must be https (the bearer token would travel in cleartext)")
+        sec.register_secret(token)
+        self.headers = {"Authorization": f"Bearer {token}"}
+
+    def _get(self, path, timeout=5):
+        r = requests.get(self.base + path, headers=self.headers, timeout=timeout)
+        if r.status_code in (401, 403):
+            raise MailConfigError("mail worker refused MAIL_API_TOKEN")
+        r.raise_for_status()  # 404 on /latest = nothing yet; retried by _poll
+        return r
+
+    def reachable(self):
+        try:
+            self._get("/health", timeout=3)
+            return True
+        except Exception:
+            return False
+
+    def latest_message(self, to_address, timeout=30, interval=1.0):
+        def fetch():
+            m = self._get("/latest?to=" + quote(to_address.lower(), safe="")).json()
+            return {"subject": m.get("subject") or "", "text": m.get("text") or "", "html": m.get("html") or ""}
+        return _poll(fetch, timeout, interval)
+
+
+def provider_from_env():
+    """Provider named by MAIL_PROVIDER in .env (mailpit by default, or cloudflare)."""
+    kind = (sec.dotenv("MAIL_PROVIDER", "mailpit") or "mailpit").lower()
+    if kind == "cloudflare":
+        return CloudflareWorkerProvider(sec.dotenv("MAIL_API_URL", ""), sec.dotenv("MAIL_API_TOKEN", ""))
+    if kind != "mailpit":
+        raise MailConfigError(f"unknown MAIL_PROVIDER {kind!r} (mailpit|cloudflare)")
+    return MailpitProvider()
 
 
 class _Hrefs(HTMLParser):
@@ -124,7 +182,7 @@ def complete_verification(page, provider, creds, timeout=30, prefer="otp"):
     if detect_captcha(page):
         return {"ok": False, "reason": "captcha_detected; stopped"}
     if not provider.reachable():
-        return {"ok": False, "skipped": True, "reason": "mail provider unreachable (is Mailpit/Docker up?)"}
+        return {"ok": False, "skipped": True, "reason": "mail provider unreachable (is Mailpit/Docker up, or the Cloudflare worker URL right?)"}
     msg = provider.latest_message(creds["TEST_EMAIL"], timeout=timeout)
     if not msg:
         return {"ok": False, "reason": "no_email_received"}

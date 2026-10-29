@@ -1,31 +1,20 @@
 """The single allowlist gate. Call check_url() before touching any site."""
-import os
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import yaml
 
-from .secrets import redact
+from . import secrets as sec
 
 DEFAULT_PATH = Path(__file__).resolve().parent.parent / "config" / "allowlist.yaml"
 _LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 _HOST = re.compile(rf"{_LABEL}(?:\.{_LABEL})*")
 
 
-DOTENV = Path(__file__).resolve().parent.parent / ".env"
-
-
 def localhost_only():
-    """LOCALHOST_ONLY from .env (AUTHAGENT_DOTENV overrides the path). Anything but an explicit false fails closed."""
-    try:
-        for line in Path(os.environ.get("AUTHAGENT_DOTENV") or DOTENV).read_text(encoding="utf-8").splitlines():
-            k, _, v = line.partition("=")  # shortcut: no quoting/export/inline-comment support
-            if k.strip() == "LOCALHOST_ONLY":
-                return v.strip().strip("\"'").lower() not in ("false", "0", "no")
-    except (OSError, ValueError):  # unreadable or undecodable .env: restricted
-        pass
-    return True
+    """LOCALHOST_ONLY from .env. Anything but an explicit false (or an unreadable .env) fails closed."""
+    return (sec.dotenv("LOCALHOST_ONLY") or "").lower() not in ("false", "0", "no")
 
 
 class HostRefused(Exception):
@@ -39,7 +28,7 @@ def _norm(entry):
     e = entry.strip().lower().rstrip(".")
     base = e[2:] if e.startswith("*.") else e
     if not _HOST.fullmatch(base):
-        raise HostRefused(f"invalid allowlist entry: {redact(entry)!r}")
+        raise HostRefused(f"invalid allowlist entry: {sec.redact(entry)!r}")
     if e.startswith("*.") and "." not in base and base != "test":
         raise HostRefused(f"wildcard too broad: {e!r}")  # blocks *.com
     return e
@@ -90,7 +79,7 @@ def check_url(url, allowlist=None):
         raise HostRefused("refused: URL contains userinfo")
     host = host.rstrip(".")
     if not _HOST.fullmatch(host):
-        raise HostRefused(f"refused: invalid hostname {redact(host)!r}")
+        raise HostRefused(f"refused: invalid hostname {sec.redact(host)!r}")
     if allowlist is None and not localhost_only():
         return host  # LOCALHOST_ONLY=false: host match skipped, every check above still applies
     patterns = load_allowlist() if allowlist is None else _normalize_all(allowlist)

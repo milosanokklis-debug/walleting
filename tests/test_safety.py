@@ -114,3 +114,12 @@ def test_localhost_only_default_restricted(tmp_path, monkeypatch, body):
     with pytest.raises(HostRefused):
         check_url("https://example.com")
     assert check_url("http://localhost")
+
+
+def test_dotenv_reader(tmp_path, monkeypatch):
+    assert sec.dotenv("A", "d") == "d"  # missing file (conftest points at a nonexistent path)
+    _dotenv(tmp_path, monkeypatch, "A=1\nB='two'\nC=\"three\"\n# D=4\n")
+    assert (sec.dotenv("A"), sec.dotenv("B"), sec.dotenv("C"), sec.dotenv("D"), sec.dotenv("D", "x")) == ("1", "two", "three", None, "x")
+    (tmp_path / "bad.env").write_bytes(b"A=\xff\xfe\n")
+    monkeypatch.setenv("AUTHAGENT_DOTENV", str(tmp_path / "bad.env"))
+    assert sec.dotenv("A", "d") == "d"

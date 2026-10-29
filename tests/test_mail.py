@@ -3,6 +3,9 @@ import time
 from email.message import EmailMessage
 
 import pytest
+import requests
+
+from authagent import secrets as sec
 
 from authagent.mail import MailpitProvider, extract_link, extract_otp, html_to_text
 
@@ -188,13 +191,13 @@ def test_email_step_reports_skip_not_failure(monkeypatch):
 
     srv = HTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    monkeypatch.setattr(M, "MailpitProvider", lambda: FakeProvider(up=False))
+    monkeypatch.setattr(M, "provider_from_env", lambda: FakeProvider(up=False))
     steps = []
     base = f"http://localhost:{srv.server_port}/"
     cont = A._email_step(base, {"final_path": "/verify"}, new_creds(), True,
                          lambda name, ok, **kw: steps.append({"step": name, "pass": bool(ok), **kw}) or bool(ok))
     srv.shutdown()
-    assert cont is False and steps[0]["pass"] is True and "Mailpit unreachable" in steps[0]["skipped"]
+    assert cont is False and steps[0]["pass"] is True and "unreachable" in steps[0]["skipped"]
 
 
 def test_live_site_otp_and_link_with_real_mailpit(site_email):
@@ -216,3 +219,111 @@ def test_live_site_otp_and_link_with_real_mailpit(site_email):
             assert r["ok"] and r["method"] == prefer
             ctx.close()
         b.close()
+
+
+# --- CloudflareWorkerProvider / provider_from_env ---
+class _Resp:
+    def __init__(self, status=200, body=None):
+        self.status_code, self._b = status, body
+
+    def json(self):
+        return self._b
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(str(self.status_code))
+
+
+def _cf(monkeypatch, tmp_path, base="https://mail.example.com"):
+    from authagent.mail import CloudflareWorkerProvider
+    monkeypatch.setattr("authagent.allowlist.load_allowlist", lambda *a: ["mail.example.com", "localhost"])
+    return CloudflareWorkerProvider(base, "tok-Zz9-secret")
+
+
+def test_cloudflare_polls_until_message_with_auth(monkeypatch, tmp_path):
+    p = _cf(monkeypatch, tmp_path)
+    calls = []
+    seq = iter([_Resp(404), requests.ConnectionError("x"), _Resp(200, {"subject": "S", "text": "T", "html": None})])
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append((url, headers))
+        r = next(seq)
+        if isinstance(r, Exception):
+            raise r
+        return r
+    monkeypatch.setattr(requests, "get", fake_get)
+    msg = p.latest_message("Agent-AB@Example.com", timeout=5, interval=0)
+    assert msg == {"subject": "S", "text": "T", "html": ""}
+    assert len(calls) == 3 and calls[0][0] == "https://mail.example.com/latest?to=agent-ab%40example.com"
+    assert all(h == {"Authorization": "Bearer tok-Zz9-secret"} for _, h in calls)
+
+
+def test_cloudflare_times_out(monkeypatch, tmp_path):
+    p = _cf(monkeypatch, tmp_path)
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(404))
+    assert p.latest_message("a@b.c", timeout=0.05, interval=0.01) is None
+
+
+def test_cloudflare_reachable(monkeypatch, tmp_path):
+    p = _cf(monkeypatch, tmp_path)
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _Resp(200))
+    assert p.reachable() is True
+
+    def boom(*a, **k):
+        raise requests.ConnectionError("down")
+    monkeypatch.setattr(requests, "get", boom)
+    assert p.reachable() is False
+
+
+def test_cloudflare_refuses_non_allowlisted_base(monkeypatch, tmp_path):
+    from authagent.allowlist import HostRefused
+    from authagent.mail import CloudflareWorkerProvider
+    with pytest.raises(HostRefused):
+        CloudflareWorkerProvider("https://evil.example.org", "tok-evil-123")
+
+
+def test_cloudflare_token_is_redacted(monkeypatch, tmp_path):
+    _cf(monkeypatch, tmp_path)
+    assert "tok-Zz9-secret" not in sec.redact("header was tok-Zz9-secret ok")
+
+
+def test_provider_from_env(monkeypatch, tmp_path):
+    from authagent.mail import CloudflareWorkerProvider, MailpitProvider, provider_from_env
+    f = tmp_path / "e.env"
+    monkeypatch.setenv("AUTHAGENT_DOTENV", str(f))
+    f.write_text("")
+    assert isinstance(provider_from_env(), MailpitProvider)
+    f.write_text("MAIL_PROVIDER=nope\n")
+    with pytest.raises(ValueError):
+        provider_from_env()
+    _cf(monkeypatch, tmp_path)
+    f.write_text("MAIL_PROVIDER=cloudflare\nMAIL_API_URL=https://mail.example.com\nMAIL_API_TOKEN=tok-env-456\n")
+    assert isinstance(provider_from_env(), CloudflareWorkerProvider)
+
+
+def test_cloudflare_config_errors(monkeypatch, tmp_path):
+    from authagent.mail import CloudflareWorkerProvider, MailConfigError
+    _cf(monkeypatch, tmp_path)
+    for base, tok in [("", "tok-a-123"), ("https://mail.example.com", ""), ("http://mail.example.com", "tok-a-123")]:
+        with pytest.raises(MailConfigError):
+            CloudflareWorkerProvider(base, tok)
+    assert CloudflareWorkerProvider("http://localhost:8787", "tok-a-123")  # local wrangler dev is fine over http
+
+
+def test_cloudflare_refused_token_stops_polling(monkeypatch, tmp_path):
+    from authagent.mail import MailConfigError
+    p = _cf(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(requests, "get", lambda *a, **k: calls.append(1) or _Resp(401))
+    with pytest.raises(MailConfigError):
+        p.latest_message("a@b.c", timeout=5, interval=0)
+    assert len(calls) == 1
+
+
+def test_preflight_fails_on_mail_misconfig(monkeypatch, tmp_path):
+    from authagent.run import _preflight
+    f = tmp_path / "e.env"
+    f.write_text("MAIL_PROVIDER=cloudflare\n")
+    monkeypatch.setenv("AUTHAGENT_DOTENV", str(f))
+    r = _preflight("now")
+    assert r["pass"] is False and "MAIL_API_URL" in r["reason"]
