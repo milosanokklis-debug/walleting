@@ -146,3 +146,11 @@ def test_error_regexes_use_word_boundaries():
     adj = {}
     adjust_from_errors(["Username is already taken"], adj)
     assert adj.get("regen") == 1
+
+
+def test_new_creds_uses_mail_domain(tmp_path, monkeypatch):
+    f = tmp_path / ".env"
+    f.write_text("MAIL_DOMAIN=mine.example.com\n")
+    monkeypatch.setenv("AUTHAGENT_DOTENV", str(f))
+    assert new_creds()["TEST_EMAIL"].endswith("@mine.example.com")
+    assert new_creds("x.test")["TEST_EMAIL"].endswith("@x.test")

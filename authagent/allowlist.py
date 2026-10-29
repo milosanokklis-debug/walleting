@@ -1,11 +1,11 @@
 """The single allowlist gate. Call check_url() before touching any site."""
-import os
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import yaml
 
+from . import secrets as sec
 from .secrets import redact
 
 DEFAULT_PATH = Path(__file__).resolve().parent.parent / "config" / "allowlist.yaml"
@@ -13,19 +13,9 @@ _LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 _HOST = re.compile(rf"{_LABEL}(?:\.{_LABEL})*")
 
 
-DOTENV = Path(__file__).resolve().parent.parent / ".env"
-
-
 def localhost_only():
-    """LOCALHOST_ONLY from .env (AUTHAGENT_DOTENV overrides the path). Anything but an explicit false fails closed."""
-    try:
-        for line in Path(os.environ.get("AUTHAGENT_DOTENV") or DOTENV).read_text(encoding="utf-8").splitlines():
-            k, _, v = line.partition("=")  # shortcut: no quoting/export/inline-comment support
-            if k.strip() == "LOCALHOST_ONLY":
-                return v.strip().strip("\"'").lower() not in ("false", "0", "no")
-    except (OSError, ValueError):  # unreadable or undecodable .env: restricted
-        pass
-    return True
+    """LOCALHOST_ONLY from .env. Anything but an explicit false (or an unreadable .env) fails closed."""
+    return (sec.dotenv("LOCALHOST_ONLY") or "").lower() not in ("false", "0", "no")
 
 
 class HostRefused(Exception):

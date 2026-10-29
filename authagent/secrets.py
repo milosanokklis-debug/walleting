@@ -5,6 +5,7 @@ import secrets as _s
 from pathlib import Path
 
 ENV_PATH = Path(os.environ.get("AUTHAGENT_ENV_FILE") or Path(__file__).resolve().parent.parent / ".env.test")  # override: tests
+DOTENV = Path(__file__).resolve().parent.parent / ".env"
 MASK = "[REDACTED]"
 _known = set()
 # key=value / JSON / header-style secrets; keyword may sit inside a longer name (TEST_PASSWORD)
@@ -30,6 +31,18 @@ def redact(text):
 
 def safe_print(*args):
     print(redact(" ".join(map(str, args))))
+
+
+def dotenv(key, default=None):
+    """Value of key from .env (AUTHAGENT_DOTENV overrides the path); default if missing or unreadable."""
+    try:
+        for line in Path(os.environ.get("AUTHAGENT_DOTENV") or DOTENV).read_text(encoding="utf-8").splitlines():
+            k, _, v = line.partition("=")  # shortcut: no export/inline-comment support
+            if k.strip() == key:
+                return v.strip().strip("\"'")
+    except (OSError, ValueError):  # unreadable or undecodable .env
+        pass
+    return default
 
 
 def generate_creds(domain="authagent.test"):

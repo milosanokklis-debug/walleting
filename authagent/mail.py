@@ -66,6 +66,52 @@ class MailpitProvider(EmailProvider):
             time.sleep(interval)
 
 
+class CloudflareWorkerProvider(EmailProvider):
+    """Reads mail from the Cloudflare Email Worker in cloudflare/mail-worker (bearer-token HTTP API)."""
+
+    def __init__(self, base, token):
+        self.base = base.rstrip("/")
+        check_url(self.base)  # the worker host must be allowlisted (user_hosts)
+        sec.register_secret(token)
+        self.headers = {"Authorization": f"Bearer {token}"}
+
+    def _get(self, path, timeout=5):
+        r = requests.get(self.base + path, headers=self.headers, timeout=timeout)
+        r.raise_for_status()
+        return r
+
+    def reachable(self):
+        try:
+            self._get("/health", timeout=3)
+            return True
+        except Exception:
+            return False
+
+    def latest_message(self, to_address, timeout=30, interval=1.0):
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                r = requests.get(self.base + "/latest?to=" + quote(to_address.lower(), safe=""), headers=self.headers, timeout=5)
+                if r.status_code == 200:  # 404 = nothing yet
+                    m = r.json()
+                    return {"subject": m.get("subject") or "", "text": m.get("text") or "", "html": m.get("html") or ""}
+            except (requests.RequestException, ValueError):
+                pass  # transient; keep polling until the deadline
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(interval)
+
+
+def provider_from_env():
+    """Provider named by MAIL_PROVIDER in .env (mailpit by default, or cloudflare)."""
+    kind = (sec.dotenv("MAIL_PROVIDER", "mailpit") or "mailpit").lower()
+    if kind == "cloudflare":
+        return CloudflareWorkerProvider(sec.dotenv("MAIL_API_URL", ""), sec.dotenv("MAIL_API_TOKEN", ""))
+    if kind != "mailpit":
+        raise ValueError(f"unknown MAIL_PROVIDER {kind!r} (mailpit|cloudflare)")
+    return MailpitProvider()
+
+
 class _Hrefs(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -124,7 +170,7 @@ def complete_verification(page, provider, creds, timeout=30, prefer="otp"):
     if detect_captcha(page):
         return {"ok": False, "reason": "captcha_detected; stopped"}
     if not provider.reachable():
-        return {"ok": False, "skipped": True, "reason": "mail provider unreachable (is Mailpit/Docker up?)"}
+        return {"ok": False, "skipped": True, "reason": "mail provider unreachable (is Mailpit/Docker up, or the Cloudflare worker URL right?)"}
     msg = provider.latest_message(creds["TEST_EMAIL"], timeout=timeout)
     if not msg:
         return {"ok": False, "reason": "no_email_received"}

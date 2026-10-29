@@ -306,7 +306,7 @@ def _email_step(url, signup_res, creds, headless, step):
     from playwright.sync_api import sync_playwright
 
     from .crawl import guard_context
-    from .mail import MailpitProvider, complete_verification
+    from .mail import complete_verification, provider_from_env
 
     base = "{0.scheme}://{0.netloc}".format(urlsplit(url))
     with sync_playwright() as pw:
@@ -317,12 +317,12 @@ def _email_step(url, signup_res, creds, headless, step):
             page = ctx.new_page()
             page.goto(base + (signup_res.get("final_path") or "/"), wait_until="domcontentloaded", timeout=15000)
             _settle(page)
-            r = complete_verification(page, MailpitProvider(), creds)
+            r = complete_verification(page, provider_from_env(), creds)
         finally:
             b.close()
     ok = r.pop("ok")
     if r.get("skipped"):  # provider genuinely unreachable: a distinct, non-failing outcome; the chain stops here
-        step("email_verify", True, skipped="Mailpit unreachable - skipping email verification (" + r["reason"] + ")")
+        step("email_verify", True, skipped="Mail provider unreachable - skipping email verification (" + r["reason"] + ")")
         return False
     step("email_verify", ok or r.get("required") is False, **r)
     return ok or r.get("required") is False

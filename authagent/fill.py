@@ -201,8 +201,8 @@ def adjust_from_errors(errors, adj):
     return changed
 
 
-def new_creds(domain="authagent.test"):
-    c = sec.generate_creds(domain)
+def new_creds(domain=None):
+    c = sec.generate_creds(domain or sec.dotenv("MAIL_DOMAIN", "authagent.test"))
     c["TEST_USERNAME"] = "agent_" + _s.token_hex(4)
     return c
 

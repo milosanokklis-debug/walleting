@@ -80,9 +80,9 @@ def test_bare_domain_still_allowlist_refused(tmp_path):
     assert code == EXIT_REFUSED and json.load(open(rp, encoding="utf-8"))["failure"]["step"] == "allowlist"
 
 
-def test_preflight_ok_reports_mailpit_flag():
+def test_preflight_ok_reports_mail_flag():
     pf = _preflight("t0")
-    assert pf["step"] == "preflight" and pf["pass"] is True and "mailpit_reachable" in pf
+    assert pf["step"] == "preflight" and pf["pass"] is True and "mail_reachable" in pf
 
 
 def test_preflight_fails_without_playwright(monkeypatch):

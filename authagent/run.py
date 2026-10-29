@@ -36,18 +36,18 @@ def resolve_target(raw):
 
 def _preflight(started):
     """Deterministic env checks before the browser pipeline. Playwright missing is a hard fail the agent can fix;
-    Mailpit reachability is informational (email_verify already skips cleanly when it is down)."""
+    Mail provider reachability is informational (email_verify already skips cleanly when it is down)."""
     try:
         import playwright.sync_api  # noqa: F401
     except Exception:
         return {"step": "preflight", "pass": False, "at": started, "duration_s": 0,
                 "reason": "Playwright not installed (run: playwright install chromium)"}
     try:
-        from .mail import MailpitProvider
-        mailpit = MailpitProvider().reachable()
+        from .mail import provider_from_env
+        mail = provider_from_env().reachable()
     except Exception:
-        mailpit = False
-    return {"step": "preflight", "pass": True, "at": started, "duration_s": 0, "mailpit_reachable": mailpit}
+        mail = False
+    return {"step": "preflight", "pass": True, "at": started, "duration_s": 0, "mail_reachable": mail}
 
 
 def _artifacts(steps):
