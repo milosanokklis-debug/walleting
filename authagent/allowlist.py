@@ -23,7 +23,7 @@ def localhost_only():
             k, _, v = line.partition("=")  # shortcut: no quoting/export/inline-comment support
             if k.strip() == "LOCALHOST_ONLY":
                 return v.strip().strip("\"'").lower() not in ("false", "0", "no")
-    except OSError:
+    except (OSError, ValueError):  # unreadable or undecodable .env: restricted
         pass
     return True
 

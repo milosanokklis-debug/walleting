@@ -24,11 +24,8 @@ MARK_JS = """() => {
     }
     i.setAttribute('data-aa-label', l.trim().slice(0, 80));
   });
-  return document.body.innerText.length;
+  return true;
 }"""
-UNMARK_JS = """() => document.querySelectorAll('[data-aa-vis],[data-aa-label]').forEach(e => {
-  e.removeAttribute('data-aa-vis'); e.removeAttribute('data-aa-label'); })"""
-
 
 def _txt(el):
     t = el.attrib.get("value") if el.tag == "input" else None
@@ -42,7 +39,7 @@ def _field(i):
             "aria_label": a.get("aria-label"), "label": a.get("data-aa-label", ""), "placeholder": a.get("placeholder")}
 
 
-def parse_page(html, url, text_len=0):
+def parse_page(html, url):
     """Rendered HTML (visible elements marked by MARK_JS) -> title/heading/links/buttons/forms."""
     sel = Selector(html, url=url)
     fields_in = lambda r: [_field(i) for i in r.css("input[data-aa-vis],select[data-aa-vis],textarea[data-aa-vis]")
@@ -62,7 +59,7 @@ def parse_page(html, url, text_len=0):
     for a in sel.css("a[href]"):
         links.setdefault(urljoin(url, a.attrib["href"]), _txt(a))  # shortcut: <base href> ignored
     return {"title": " ".join(sel.css("title::text").get("").split()), "heading": _txt(h[0]) if h else "",
-            "text_len": text_len, "links": list(links), "link_text": links, "buttons": btns(body[0]) if body else [], "forms": forms}
+            "links": list(links), "link_text": links, "buttons": btns(body[0]) if body else [], "forms": forms}
 
 
 def _norm(url):
@@ -102,33 +99,22 @@ def guard_context(context, start_url, stats):
     context.route("**/*", _guard_handler(start_url, stats))
 
 
-def extract_page(page):
-    """Live-DOM marking in the guarded page, then Scrapling parses page.content(). Classification as before."""
-    text_len = page.evaluate(MARK_JS)
-    try:
-        data = parse_page(page.content(), page.url, text_len)
-    finally:
-        page.evaluate(UNMARK_JS)  # keep saved HTML free of our markers
-    for f in data["forms"]:
-        f["classification"] = classify_form(f, page.url)
-    return data
-
-
 def fetch_page(session, url, start_url, stats):
-    """One Scrapling fetch. The page is route-guarded via page_setup before navigation; markers via page_action."""
-    box = {"text_len": 0}
+    """One Scrapling fetch (the session's context is route-guarded by crawl()); visibility markers via page_action."""
+    box = {}
 
     def mark(page):
-        box["text_len"] = page.evaluate(MARK_JS)
+        box["marked"] = page.evaluate(MARK_JS)
 
-    resp = session.fetch(url, page_setup=lambda pg: pg.route("**/*", _guard_handler(start_url, stats)), page_action=mark)
+    resp = session.fetch(url, page_action=mark)
+    if not box.get("marked"):  # Scrapling swallows page_action errors; unmarked HTML would silently show no forms
+        raise RuntimeError("page_action did not run")
     check_url(resp.url)  # final URL after redirects: same gate, plus same origin
     if _origin(resp.url) != _origin(start_url):
         raise HostRefused("cross-origin final URL")
-    data = parse_page(str(resp.html_content), resp.url, box["text_len"])
+    data = parse_page(str(resp.html_content), resp.url)
     for f in data["forms"]:
         f["classification"] = classify_form(f, resp.url)
-    data["http_status"] = resp.status  # informational only, never trusted
     data["final_path"] = urlsplit(_norm(resp.url)).path
     return data
 
@@ -169,8 +155,11 @@ def crawl(start_url, depth=2, max_pages=25, headless=True, skip=None, cookies=No
 
     check_url(start_url)
     stats = {"blocked": 0}
-    with StealthySession(headless=headless, solve_cloudflare=False, google_search=False, network_idle=True,
-                         retries=1, cookies=cookies or []) as session:
+    session = StealthySession(headless=headless, solve_cloudflare=False, google_search=False, network_idle=True,
+                              retries=1, cookies=cookies or [])
+    session._context_options["service_workers"] = "block"  # shortcut: private attr; worker requests skip route guards
+    with session:
+        session.context.route("**/*", _guard_handler(start_url, stats))  # context-wide: every page, popups included
         pages = crawl_page(session, start_url, depth, max_pages, skip, stats)
     return {"host": urlsplit(start_url).netloc, "pages": pages, "blocked_requests": stats["blocked"]}
 

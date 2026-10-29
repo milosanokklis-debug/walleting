@@ -30,12 +30,13 @@ def failure_reason(e):
 
 
 def skip_link(url, text=""):
-    """True for links the post-login crawl must not follow: logout/sign-out or destructive-looking (path or text)."""
-    hay = urlsplit(url).path.replace("_", "-") + " " + text
+    """True for links the post-login crawl must not follow: logout/sign-out or destructive-looking (path, query or text)."""
+    p = urlsplit(url)
+    hay = (p.path + " " + p.query).replace("_", "-") + " " + text
     return bool(LOGOUT.search(hay) or DESTRUCTIVE.search(hay))
 
 
-def post_login_crawl(page, ctx, base_cookies, login_path, landing, headless=True):
+def post_login_crawl(page, ctx, login_path, landing, headless=True):
     """Crawl the logged-in site from the landing page with Scrapling, reusing this context's cookies (GET only,
     no forms). Passes only if >=1 page was crawled and the session is still alive on the Playwright page after."""
     from .crawl import crawl
@@ -47,7 +48,7 @@ def post_login_crawl(page, ctx, base_cookies, login_path, landing, headless=True
                    "forms": sorted(f["classification"]["kind"] for f in p["forms"])} for u, p in ok_pages.items()]
         page.reload(wait_until="domcontentloaded", timeout=15000)  # re-ask the server: did the crawl end the session?
         _settle(page)
-        alive = is_authenticated(session_signals(page, ctx, base_cookies, login_path))
+        alive = is_authenticated(session_signals(page, ctx, set(), login_path))
         out = {"ok": bool(ok_pages) and alive, "pages": len(ok_pages), "errors": len(sm["pages"]) - len(ok_pages),
                "blocked_requests": sm["blocked_requests"], "routes": routes}
         if not ok_pages:
@@ -288,7 +289,7 @@ def _e2e(url, headless, steps, info):
             r = login_once(page, ctx, login_url, creds)
             pre = _cookie_hashes(ctx)
             if step("login", r["ok"], **{k: v for k, v in r.items() if k != "ok"}):
-                pc = post_login_crawl(page, ctx, set(), urlsplit(login_url).path, page.url, headless)
+                pc = post_login_crawl(page, ctx, urlsplit(login_url).path, page.url, headless)
                 info["post_login_routes"] = pc.get("routes", [])
                 step("post_login_crawl", pc["ok"], **{k: v for k, v in pc.items() if k != "ok"})
                 lo = logout(page, ctx, pre)
