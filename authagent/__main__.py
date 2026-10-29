@@ -13,6 +13,8 @@ r = sub.add_parser("run", help="full pipeline: allowlist, discovery, signup, (em
 r.add_argument("--url", required=True, help="site URL (an entry path such as /join may be included or passed via --entry)")
 r.add_argument("--entry", help="optional entry path, e.g. /join when the site root has no links")
 r.add_argument("--headed", action="store_true", help="show the browser")
+r.add_argument("--grab-wallets", action="store_true",
+               help="opt-in: submit the logged-in deposit form per crypto method to reveal the site's receiving wallets (no funds sent)")
 rp = sub.add_parser("report", help="render a run's report.json to a self-contained report.html next to it")
 rp.add_argument("report_json")
 a = p.parse_args()
@@ -33,7 +35,7 @@ if a.cmd == "report":
     raise SystemExit(0)
 if a.cmd == "run":
     from .run import run as pipeline
-    code, _ = run(lambda: pipeline(a.url, entry=a.entry, headless=not a.headed))
+    code, _ = run(lambda: pipeline(a.url, entry=a.entry, headless=not a.headed, grab_wallets=a.grab_wallets))
     raise SystemExit(code)
 if a.e2e:
     from .auth import e2e, report

@@ -11,6 +11,8 @@ from . import secrets as sec
 from .allowlist import check_url
 from .crawl import crawl, route
 from .fill import CAPTCHA_FIELD, FIELDS_JS, detect_captcha, map_field, signup
+from . import wallet
+from .intel import aggregate_intel
 
 LOGOUT = re.compile(r"log[\s-]?out|sign[\s-]?out", re.I)
 DESTRUCTIVE = re.compile(r"delet|remov|deactivat|destroy|close[\s-]?(my[\s-]?)?account", re.I)
@@ -38,6 +40,19 @@ def skip_link(url, text=""):
     return bool(LOGOUT.search(hay) or DESTRUCTIVE.search(hay))
 
 
+def _merge_wallets(info, gw, dep_path):
+    """Fold deposit-flow wallets into info['intel'] so the terminal/report intel block shows them."""
+    intel = info.get("intel") or {}
+    have = {w["address"] for w in intel.get("wallets", [])}
+    for w in gw.get("addresses", []):
+        if w["address"] not in have:
+            intel.setdefault("wallets", []).append({"address": w["address"], "cointype": w["cointype"],
+                                                    "pages": [dep_path], "method": w.get("method")})
+            have.add(w["address"])
+    intel["tuples"] = [(w["address"], w["cointype"]) for w in intel.get("wallets", [])]
+    info["intel"] = intel
+
+
 def post_login_crawl(page, ctx, login_path, landing, headless=True):
     """Crawl the logged-in site from the landing page with Scrapling, reusing this context's cookies (GET only,
     no forms). Passes only if >=1 page was crawled and the session is still alive on the Playwright page after."""
@@ -52,11 +67,13 @@ def post_login_crawl(page, ctx, login_path, landing, headless=True):
         ok_pages = {u: p for u, p in sm["pages"].items() if "error" not in p}
         routes = [{"path": route(u), "title": sec.redact(p["title"])[:80],
                    "forms": sorted(f["classification"]["kind"] for f in p["forms"])} for u, p in ok_pages.items()]
+        headers = next((p.get("headers") for p in ok_pages.values() if p.get("headers")), None)
+        intel = aggregate_intel(ok_pages, host=sm["host"], headers=headers)  # crypto wallets + site fingerprint
         page.reload(wait_until="domcontentloaded", timeout=15000)  # re-ask the server: did the crawl end the session?
         _settle(page)
         alive = is_authenticated(session_signals(page, ctx, set(), login_path))
         out = {"ok": bool(ok_pages) and alive, "pages": len(ok_pages), "errors": len(sm["pages"]) - len(ok_pages),
-               "blocked_requests": sm["blocked_requests"], "routes": routes}
+               "blocked_requests": sm["blocked_requests"], "routes": routes, "intel": intel}
         if not ok_pages:
             out["reason"] = "no page crawled"
         elif not alive:
@@ -235,11 +252,13 @@ def save_evidence(url, steps):
     (EVIDENCE_DIR / name).write_text(json.dumps(sec.redact_obj(steps), indent=1), encoding="utf-8")
 
 
-def e2e(url, headless=True, info=None):
-    """discovery -> signup -> login -> success check -> logout -> re-login. Never raises; no secrets in results."""
+def e2e(url, headless=True, info=None, grab=False):
+    """discovery -> signup -> login -> success check -> logout -> re-login. Never raises; no secrets in results.
+
+    grab=True adds a deposit-flow wallet grab (submits the deposit form per crypto method) after the login check."""
     steps = []
     try:
-        _e2e(url, headless, steps, info if info is not None else {})
+        _e2e(url, headless, steps, info if info is not None else {}, grab)
     except Exception as e:
         steps.append({"step": "error", "pass": False, "reason": failure_reason(e)})
     try:
@@ -249,7 +268,7 @@ def e2e(url, headless=True, info=None):
     return steps
 
 
-def _e2e(url, headless, steps, info):
+def _e2e(url, headless, steps, info, grab=False):
     from playwright.sync_api import sync_playwright
 
     from .crawl import crawl, guard_context
@@ -297,7 +316,14 @@ def _e2e(url, headless, steps, info):
             if step("login", r["ok"], **{k: v for k, v in r.items() if k != "ok"}):
                 pc = post_login_crawl(page, ctx, route(login_url), page.url, headless)
                 info["post_login_routes"] = pc.get("routes", [])
+                info["intel"] = pc.get("intel", {})
                 step("post_login_crawl", pc["ok"], **{k: v for k, v in pc.items() if k != "ok"})
+                if grab:
+                    dep = next((r["path"] for r in pc.get("routes", []) if "deposit" in r["path"].lower()), "/?a=deposit")
+                    base = "{0.scheme}://{0.netloc}".format(urlsplit(url))
+                    gw = wallet.grab_wallets(page, ctx, base + dep)
+                    _merge_wallets(info, gw, dep)
+                    step("grab_wallets", gw["ok"], **{k: v for k, v in gw.items() if k != "ok"})
                 lo = logout(page, ctx, pre)
                 if step("logout", lo["ok"], **{k: v for k, v in lo.items() if k != "ok"}):
                     r2 = login_once(page, ctx, login_url, creds, "relogin")

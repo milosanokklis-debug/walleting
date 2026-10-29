@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import auth
+from . import intel as intel_mod
 from . import secrets as sec
 from .allowlist import HostRefused, check_url
 from .crawl import route
@@ -70,6 +71,7 @@ def build_report(url, steps, info, started, finished, status, run_dir):
         "schema": 1, "url": url, "host": urlsplit(url).netloc, "status": status,
         "started_at": started, "finished_at": finished,
         "steps": steps, "routes": info.get("routes", []), "artifacts": _artifacts(steps),
+        "intel": info.get("intel", {}),
         "failure": ({"step": failed["step"], "reason": failed.get("reason") or failed.get("outcome") or failed.get("errors")}
                     if failed else None),
         "run_dir": run_dir,
@@ -84,8 +86,10 @@ def write_report(report, run_dir: Path):
     return path
 
 
-def run(url, entry=None, headless=True, runs_root=None):
-    """Returns (exit_code, report_path). Allowlist refusal -> exit 2 with a clear message."""
+def run(url, entry=None, headless=True, runs_root=None, grab_wallets=False):
+    """Returns (exit_code, report_path). Allowlist refusal -> exit 2 with a clear message.
+
+    grab_wallets=True adds an opt-in deposit-flow step that submits the deposit form to reveal receiving wallets."""
     runs_root = Path(runs_root or os.environ.get("AUTHAGENT_RUNS_DIR") or ROOT / "runs")
     stamp = time.strftime("%Y%m%d-%H%M%S")
     started = time.strftime("%Y-%m-%dT%H:%M:%S%z")
@@ -107,7 +111,7 @@ def run(url, entry=None, headless=True, runs_root=None):
         old = auth.EVIDENCE_DIR
         auth.EVIDENCE_DIR = run_dir  # authenticated-HTML proofs and screenshots land in the run dir
         try:
-            steps += auth.e2e(clean, headless=headless, info=info)
+            steps += auth.e2e(clean, headless=headless, info=info, grab=grab_wallets)
         finally:
             auth.EVIDENCE_DIR = old
     finished = time.strftime("%Y-%m-%dT%H:%M:%S%z")
@@ -120,5 +124,7 @@ def run(url, entry=None, headless=True, runs_root=None):
         tag = "SKIP" if s.get("skipped") else "PASS" if s["pass"] else "FAIL"
         extra = s.get("reason") or s.get("skipped") or s.get("outcome") or ""
         sec.safe_print(f"{tag} {s['step']}" + (f" - {extra}" if extra and not s["pass"] or s.get("skipped") else ""))
+    if info.get("intel"):  # mask any registered secret (e.g. the operator's own creds); site wallets are not secrets
+        sec.safe_print(intel_mod.format_intel(sec.redact_obj(info["intel"])))
     sec.safe_print(f"status={status} report={rp.relative_to(ROOT).as_posix() if rp.is_relative_to(ROOT) else rp.name}")
     return code, rp

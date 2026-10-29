@@ -10,6 +10,7 @@ from scrapling.parser import Selector
 
 from .allowlist import HostRefused, check_url
 from .classify import classify_form
+from .intel import extract_page_intel
 from .secrets import redact, safe_print
 
 CACHE_DIR = Path(__file__).resolve().parent.parent / "runs"
@@ -149,10 +150,14 @@ def fetch_page(session, url, start_url, stats):
     check_url(resp.url)  # final URL after redirects: same gate, plus same origin
     if _origin(resp.url) != _origin(start_url):
         raise HostRefused("cross-origin final URL")
-    data = parse_page(str(resp.html_content), resp.url)
+    html = str(resp.html_content)
+    data = parse_page(html, resp.url)
     for f in data["forms"]:
         f["classification"] = classify_form(f, resp.url)
     data["final_path"] = route(_norm(resp.url))
+    data["intel"] = extract_page_intel(html)  # crypto addresses, contacts, hosts, fingerprint from this page
+    data["headers"] = {k.lower(): v for k, v in (getattr(resp, "headers", None) or {}).items()
+                       if k.lower() in ("server", "x-powered-by", "x-generator")}
     return data
 
 
