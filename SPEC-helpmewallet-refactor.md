@@ -11,8 +11,10 @@ Success = running `/helpmewallet localhost:8891` (a bare domain) does the same t
 full-URL call, with zero model reasoning until/unless a pipeline step actually fails.
 
 ## Tech stack
-Unchanged. Python 3.12 stdlib + Playwright (`authagent/`), Node test sites, Mailpit via Docker.
-No new dependencies.
+Python 3.12 stdlib + Playwright (`authagent/`), Node test sites, Mailpit via Docker.
+Update 2026-10-29: crawling (discovery + post-login crawl) uses Scrapling's `StealthySession` (challenge solving off,
+allowlist route guard attached per page via `page_setup`); signup/login/logout stay on Playwright. CAPTCHAs are still
+never solved.
 
 ## Commands
 - Run: `python -m authagent run --url <domain|host:port|http(s)://url>` (now accepts a bare host)

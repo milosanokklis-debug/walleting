@@ -11,6 +11,7 @@ reports/
 output/
 .env.*
 !.env.test.example
+!.env.example
 storage_state*.json
 *storage-state*.json
 auth.json

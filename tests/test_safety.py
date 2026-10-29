@@ -83,3 +83,34 @@ def test_fresh_process_loads_seed(tmp_path):
     assert "Zq9-unique" in sec.redact("bare Zq9-unique here")  # not yet registered
     sec.load_env_seed(p)
     assert "Zq9-unique" not in sec.redact("bare Zq9-unique here")
+
+
+def _dotenv(tmp_path, monkeypatch, body):
+    f = tmp_path / ".env"
+    f.write_text(body)
+    monkeypatch.setenv("AUTHAGENT_DOTENV", str(f))
+
+
+@pytest.mark.parametrize("v", ["false", "FALSE", "0", "no", " False "])
+def test_localhost_only_false_allows_other_hosts(tmp_path, monkeypatch, v):
+    _dotenv(tmp_path, monkeypatch, f"X=1\nLOCALHOST_ONLY={v}\n")
+    assert check_url("https://example.com/x") == "example.com"
+
+
+@pytest.mark.parametrize("u", [
+    "http://u:p@example.com/", "http://example.com\\@a.com/", "ftp://example.com", "http://exa\nmple.com",
+    "http://example.com:abc", "http://..example.com", "http://exämple.com", "example.com",
+])
+def test_localhost_only_false_keeps_url_checks(tmp_path, monkeypatch, u):
+    _dotenv(tmp_path, monkeypatch, "LOCALHOST_ONLY=false")
+    with pytest.raises(HostRefused):
+        check_url(u)
+
+
+@pytest.mark.parametrize("body", [None, "", "OTHER=1", "LOCALHOST_ONLY=banana", "LOCALHOST_ONLY=", "LOCALHOST_ONLY=true"])
+def test_localhost_only_default_restricted(tmp_path, monkeypatch, body):
+    if body is not None:
+        _dotenv(tmp_path, monkeypatch, body)
+    with pytest.raises(HostRefused):
+        check_url("https://example.com")
+    assert check_url("http://localhost")

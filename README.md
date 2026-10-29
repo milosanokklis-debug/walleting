@@ -11,6 +11,7 @@ python -m venv .venv
 .venv\Scripts\activate            # Windows (macOS/Linux: source .venv/bin/activate)
 pip install -r requirements.txt
 playwright install chromium
+scrapling install                 # browser for Scrapling's StealthySession (crawling)
 ```
 
 ## Run the agent
@@ -21,7 +22,7 @@ python -m authagent run --url http://localhost:8890/join
 ```
 
 `run` executes: allowlist check, discovery, signup, email verification (only when the site asks for it), login,
-success check, logout, re-login. It prints one PASS/FAIL/SKIP line per step and writes
+success check, post-login crawl, logout, re-login. It prints one PASS/FAIL/SKIP line per step and writes
 `runs/run-<host>-<timestamp>/report.json` (step timeline, discovered routes, artifact paths) plus the saved
 authenticated-page HTML and a screenshot in the same folder.
 
@@ -39,6 +40,21 @@ Other commands:
 | `python -m authagent --signup <url>` | Discovers and fills the signup form only |
 | `python -m authagent --e2e <url>` | Older all-in-one runner (no run directory) |
 | `python -m authagent report <report.json>` | Summarizes a finished report |
+
+## Crawling
+
+Crawling (discovery and the post-login crawl) is done entirely by [Scrapling](https://github.com/D4Vinci/Scrapling):
+pages are fetched with its `StealthySession` browser and parsed with its HTML parser. Cloudflare/challenge solving is
+off: a CAPTCHA or bot wall is never solved. The allowlist still gates every crawl request, including subresources (a
+route guard is attached to each page before it loads), every URL is checked before it is fetched, and the final URL
+after redirects must pass the allowlist and stay on the same origin. Signup, login and logout run in Playwright behind
+the same guard.
+
+The `post_login_crawl` step runs after `login`: Scrapling gets the logged-in context's cookies and does a same-origin
+BFS (depth 2, up to 15 pages), GET navigation only, forms are never submitted. Links whose path or text looks like
+logout/sign-out, or delete / remove / deactivate / close-account, are skipped. It passes if at least one page was crawled
+and the Playwright session is still authenticated after a reload; the report records the page count and a route list
+(path, title, form kinds), no HTML or field values.
 
 ## The `/helpmewallet` skill
 
@@ -63,6 +79,20 @@ user_hosts:
 ```
 
 Ports are not part of the match. Unreadable or malformed config refuses everything (fail closed).
+
+### `LOCALHOST_ONLY` toggle
+
+Copy `.env.example` to `.env` (gitignored) in the project root:
+
+```
+LOCALHOST_ONLY=true
+```
+
+`true` is the default, and also what you get if `.env` or the key is missing or the value is not recognised (fail
+closed): hosts must match `config/allowlist.yaml`. `false` (also `0` / `no`, case-insensitive) skips only that host
+match. Every other URL check still applies (http/https only, no userinfo, no backslash/control/non-ASCII characters,
+valid hostname and port), and the same-origin navigation guard in the crawler stays on. Use `false` only against sites
+you are authorised to test. Tests point `AUTHAGENT_DOTENV` at another path so they never read your real `.env`.
 
 ## Email verification: Mailpit and the 8890 test site
 

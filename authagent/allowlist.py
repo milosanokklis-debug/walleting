@@ -1,4 +1,5 @@
 """The single allowlist gate. Call check_url() before touching any site."""
+import os
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -10,6 +11,21 @@ from .secrets import redact
 DEFAULT_PATH = Path(__file__).resolve().parent.parent / "config" / "allowlist.yaml"
 _LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 _HOST = re.compile(rf"{_LABEL}(?:\.{_LABEL})*")
+
+
+DOTENV = Path(__file__).resolve().parent.parent / ".env"
+
+
+def localhost_only():
+    """LOCALHOST_ONLY from .env (AUTHAGENT_DOTENV overrides the path). Anything but an explicit false fails closed."""
+    try:
+        for line in Path(os.environ.get("AUTHAGENT_DOTENV") or DOTENV).read_text(encoding="utf-8").splitlines():
+            k, _, v = line.partition("=")  # shortcut: no quoting/export/inline-comment support
+            if k.strip() == "LOCALHOST_ONLY":
+                return v.strip().strip("\"'").lower() not in ("false", "0", "no")
+    except OSError:
+        pass
+    return True
 
 
 class HostRefused(Exception):
@@ -75,6 +91,8 @@ def check_url(url, allowlist=None):
     host = host.rstrip(".")
     if not _HOST.fullmatch(host):
         raise HostRefused(f"refused: invalid hostname {redact(host)!r}")
+    if allowlist is None and not localhost_only():
+        return host  # LOCALHOST_ONLY=false: host match skipped, every check above still applies
     patterns = load_allowlist() if allowlist is None else _normalize_all(allowlist)
     if not any(_matches(host, p) for p in patterns):
         raise HostRefused(f"refused: host {host!r} is not on the allowlist")

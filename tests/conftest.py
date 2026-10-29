@@ -69,3 +69,9 @@ def site_email(mailpit):
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_dotenv(tmp_path, monkeypatch):
+    """Never read a developer's real .env; tests that need one set AUTHAGENT_DOTENV themselves."""
+    monkeypatch.setenv("AUTHAGENT_DOTENV", str(tmp_path / "no-such.env"))

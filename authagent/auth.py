@@ -11,6 +11,7 @@ from .allowlist import check_url
 from .fill import CAPTCHA_FIELD, FIELDS_JS, detect_captcha, map_field, signup
 
 LOGOUT = re.compile(r"log[\s-]?out|sign[\s-]?out", re.I)
+DESTRUCTIVE = re.compile(r"delet|remov|deactivat|destroy|close[\s-]?(my[\s-]?)?account", re.I)
 LOGINBTN = re.compile(r"log[\s-]?in|sign[\s-]?in|continue|submit", re.I)
 NOT_LOGIN_BTN = re.compile(r"google|github|facebook|apple|twitter|microsoft|forgot|reset|register|sign[\s-]?up|create", re.I)
 ME_PROBES = ("/api/auth/me", "/api/me", "/me")  # shortcut: common session-probe paths, not exhaustive
@@ -26,6 +27,36 @@ POST_JS = """async (p) => { try { return (await fetch(p, {method: 'POST', creden
 def failure_reason(e):
     """Type name plus the redacted first line only. Never a traceback (Playwright errors embed filled values)."""
     return f"{type(e).__name__}: {sec.redact(str(e).splitlines()[0] if str(e) else '')[:120]}"
+
+
+def skip_link(url, text=""):
+    """True for links the post-login crawl must not follow: logout/sign-out or destructive-looking (path or text)."""
+    hay = urlsplit(url).path.replace("_", "-") + " " + text
+    return bool(LOGOUT.search(hay) or DESTRUCTIVE.search(hay))
+
+
+def post_login_crawl(page, ctx, base_cookies, login_path, landing, headless=True):
+    """Crawl the logged-in site from the landing page with Scrapling, reusing this context's cookies (GET only,
+    no forms). Passes only if >=1 page was crawled and the session is still alive on the Playwright page after."""
+    from .crawl import crawl
+
+    try:
+        sm = crawl(landing, depth=2, max_pages=15, headless=headless, skip=skip_link, cookies=ctx.cookies())
+        ok_pages = {u: p for u, p in sm["pages"].items() if "error" not in p}
+        routes = [{"path": urlsplit(u).path, "title": sec.redact(p["title"])[:80],
+                   "forms": sorted(f["classification"]["kind"] for f in p["forms"])} for u, p in ok_pages.items()]
+        page.reload(wait_until="domcontentloaded", timeout=15000)  # re-ask the server: did the crawl end the session?
+        _settle(page)
+        alive = is_authenticated(session_signals(page, ctx, base_cookies, login_path))
+        out = {"ok": bool(ok_pages) and alive, "pages": len(ok_pages), "errors": len(sm["pages"]) - len(ok_pages),
+               "blocked_requests": sm["blocked_requests"], "routes": routes}
+        if not ok_pages:
+            out["reason"] = "no page crawled"
+        elif not alive:
+            out["reason"] = "session lost after crawl"
+        return out
+    except Exception as e:
+        return {"ok": False, "reason": failure_reason(e)}
 
 
 def _logout_control(page):
@@ -257,6 +288,9 @@ def _e2e(url, headless, steps, info):
             r = login_once(page, ctx, login_url, creds)
             pre = _cookie_hashes(ctx)
             if step("login", r["ok"], **{k: v for k, v in r.items() if k != "ok"}):
+                pc = post_login_crawl(page, ctx, set(), urlsplit(login_url).path, page.url, headless)
+                info["post_login_routes"] = pc.get("routes", [])
+                step("post_login_crawl", pc["ok"], **{k: v for k, v in pc.items() if k != "ok"})
                 lo = logout(page, ctx, pre)
                 if step("logout", lo["ok"], **{k: v for k, v in lo.items() if k != "ok"}):
                     r2 = login_once(page, ctx, login_url, creds, "relogin")
