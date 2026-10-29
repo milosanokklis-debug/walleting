@@ -81,15 +81,18 @@ def test_guard_blocks_non_allowlisted_requests(page):
 class FakeSession:
     """Stands in for Scrapling's StealthySession: url -> (final_url, html). No browser, no network."""
 
-    def __init__(self, site):
+    def __init__(self, site, statuses=None):
         self.site, self.fetched = site, []
+        self.statuses = dict(statuses or {})  # url -> list of statuses popped per fetch (default 200)
 
     def fetch(self, url, page_action=None):
         from types import SimpleNamespace
         self.fetched.append(url)
         final, html = self.site[url]
+        seq = self.statuses.get(url)
+        status = seq.pop(0) if seq else 200
         page_action(SimpleNamespace(evaluate=lambda js: 7))
-        return SimpleNamespace(url=final, status=200, html_content=html)
+        return SimpleNamespace(url=final, status=status, html_content=html)
 
 
 def test_crawl_page_follows_same_origin_and_skips():
@@ -108,3 +111,38 @@ def test_crawl_page_refuses_cross_origin_redirect():
     stats = {"blocked": 0}
     pages = crawl_page(FakeSession({b + "/": ("http://example.com/", "<a href=/a>A</a>")}), b + "/", stats=stats)
     assert "error" in pages[b + "/"] and stats["blocked"] == 1
+
+
+def test_route_keeps_route_params_and_drops_tokens():
+    from authagent.crawl import route
+    assert route("http://x.test/?a=signup") == "/?a=signup"
+    assert route("http://x.test/?a=deposit_history") == "/?a=deposit_history"
+    assert route("http://x.test/page?p=2") == "/page?p=2"
+    # tokens dropped: named secret key, long hex under an unlisted key, long digit value, JWT-ish (dots fail fullmatch)
+    assert route("http://x.test/?a=signup&token=abc123&otp=482913") == "/?a=signup"
+    assert route("http://x.test/?t=0123456789abcdef0123456789abcdef") == "/"
+    assert route("http://x.test/?ref=1234567890123") == "/"
+    assert route("http://x.test/verify?code=xyz") == "/verify"
+    # order-independent: same key after filtering, sorted
+    assert route("http://x.test/?a=x&b=y") == route("http://x.test/?b=y&a=x")
+
+
+def test_fetch_page_retries_then_succeeds(monkeypatch):
+    import authagent.crawl as c
+    monkeypatch.setattr(c.time, "sleep", lambda s: None)
+    b = "http://localhost:1"
+    s = FakeSession({b + "/": (b + "/", "<p>ok</p>")}, statuses={b + "/": [429, 403, 200]})
+    data = c.fetch_page(s, b + "/", b + "/", {"blocked": 0})
+    assert len(s.fetched) == 3 and data["title"] == ""
+
+
+def test_fetch_page_raises_when_throttled_out(monkeypatch):
+    import authagent.crawl as c
+    monkeypatch.setattr(c.time, "sleep", lambda s: None)
+    b = "http://localhost:1"
+    s = FakeSession({b + "/": (b + "/", "<p>blocked</p>")}, statuses={b + "/": [403] * 9})
+    with pytest.raises(RuntimeError, match="throttled"):
+        c.fetch_page(s, b + "/", b + "/", {"blocked": 0})
+    # a throttled-out page is recorded as an error by crawl_page, never a silent empty page
+    pages = c.crawl_page(FakeSession({b + "/": (b + "/", "<p>x</p>")}, statuses={b + "/": [403] * 9}), b + "/")
+    assert "error" in pages[b + "/"] and "throttled" in pages[b + "/"]["error"]

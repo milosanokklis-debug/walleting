@@ -1,8 +1,10 @@
 """Allowlist-gated, same-origin crawler (Scrapling StealthySession fetches, Scrapling parses) producing a classified site map."""
 import json
+import re
+import time
 from collections import deque
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from scrapling.parser import Selector
 
@@ -11,6 +13,8 @@ from .classify import classify_form
 from .secrets import redact, safe_print
 
 CACHE_DIR = Path(__file__).resolve().parent.parent / "runs"
+CRAWL_DELAY = 1.2       # seconds between page fetches: stay under a server's burst rate limit
+THROTTLE_RETRIES = 3    # on a 403/429 (rate limit, not a challenge) wait and retry this many times (1.2+2.4+4.8s)
 
 # Runs in the rendered page; only what needs a live DOM. Marks visible elements and resolves input labels.
 # Never reads field values. Parsing happens in Scrapling on page.content().
@@ -62,10 +66,34 @@ def parse_page(html, url):
             "links": list(links), "link_text": links, "buttons": btns(body[0]) if body else [], "forms": forms}
 
 
+SECRET_PARAM = re.compile(r"token|code|key|secret|sig|auth|session|sid|pass|mail|otp|nonce|state|hash|reset|verif", re.I)
+ROUTE_VALUE = re.compile(r"[A-Za-z0-9_-]{1,24}")
+_HEX12 = re.compile(r"[0-9a-f]{12,}", re.I)
+
+
+def _route_value(v):
+    """A route-like value (signup, deposit_history, 2) vs a token. Denylist on keys is not enough; also reject
+    token-shaped values: too long, long-and-hex, or long-with-digits. Harmless keys like postcode/design are
+    dropped too (merged under '/'); that is the safe trade. Real route names are short words, so little is lost."""
+    return bool(ROUTE_VALUE.fullmatch(v)) and not (len(v) >= 12 and (_HEX12.fullmatch(v) or any(c.isdigit() for c in v)))
+
+
+def route_query(query):
+    """Keep only route-like params (?a=signup), sorted, so tokens never reach the map and ?a=x&b=y == ?b=y&a=x."""
+    return urlencode(sorted((k, v) for k, v in parse_qsl(query) if not SECRET_PARAM.search(k) and _route_value(v)))
+
+
+def route(url):
+    """Path plus route-like query: the key for a page (query-routed sites put every page on /)."""
+    p = urlsplit(url)
+    q = route_query(p.query)
+    return (p.path or "/") + ("?" + q if q else "")
+
+
 def _norm(url):
     p = urlsplit(url)
-    # shortcut: query/fragment dropped so tokens never reach the map; query-only routes are not distinguished
-    return urlunsplit((p.scheme, p.netloc.lower(), p.path.rstrip("/") or "/", "", ""))
+    # fragment and token-like query params dropped so tokens never reach the map
+    return urlunsplit((p.scheme, p.netloc.lower(), p.path.rstrip("/") or "/", route_query(p.query), ""))
 
 
 def _origin(url):
@@ -106,7 +134,16 @@ def fetch_page(session, url, start_url, stats):
     def mark(page):
         box["marked"] = page.evaluate(MARK_JS)
 
-    resp = session.fetch(url, page_action=mark)
+    # A 403/429 here is a server rate limiter, not a CAPTCHA/challenge: wait out the burst window and retry.
+    # Challenge solving is still off (solve_cloudflare=False); a real bot wall is never worked around.
+    for attempt in range(THROTTLE_RETRIES + 1):
+        resp = session.fetch(url, page_action=mark)
+        status = getattr(resp, "status", None)
+        if status not in (403, 429) or attempt == THROTTLE_RETRIES:
+            break
+        time.sleep(CRAWL_DELAY * (2 ** attempt))  # exponential backoff: 1.2s, 2.4s, 4.8s, ...
+    if status in (403, 429):  # still throttled after retries: record an error, never a silent empty page
+        raise RuntimeError(f"throttled (HTTP {status}) after {THROTTLE_RETRIES} retries")
     if not box.get("marked"):  # Scrapling swallows page_action errors; unmarked HTML would silently show no forms
         raise RuntimeError("page_action did not run")
     check_url(resp.url)  # final URL after redirects: same gate, plus same origin
@@ -115,7 +152,7 @@ def fetch_page(session, url, start_url, stats):
     data = parse_page(str(resp.html_content), resp.url)
     for f in data["forms"]:
         f["classification"] = classify_form(f, resp.url)
-    data["final_path"] = urlsplit(_norm(resp.url)).path
+    data["final_path"] = route(_norm(resp.url))
     return data
 
 
@@ -127,6 +164,8 @@ def crawl_page(session, start_url, depth=2, max_pages=25, skip=None, stats=None)
     queue, seen = deque([(_norm(start_url), 0)]), {_norm(start_url)}
     while queue and len(pages) < max_pages:
         url, d = queue.popleft()
+        if pages:
+            time.sleep(CRAWL_DELAY)  # pace requests so a burst rate limiter does not 403 the whole crawl
         try:
             check_url(url)
             data = fetch_page(session, url, start_url, stats)

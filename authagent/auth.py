@@ -3,11 +3,13 @@ import hashlib
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import secrets as sec
 from .allowlist import check_url
+from .crawl import crawl, route
 from .fill import CAPTCHA_FIELD, FIELDS_JS, detect_captcha, map_field, signup
 
 LOGOUT = re.compile(r"log[\s-]?out|sign[\s-]?out", re.I)
@@ -39,12 +41,16 @@ def skip_link(url, text=""):
 def post_login_crawl(page, ctx, login_path, landing, headless=True):
     """Crawl the logged-in site from the landing page with Scrapling, reusing this context's cookies (GET only,
     no forms). Passes only if >=1 page was crawled and the session is still alive on the Playwright page after."""
-    from .crawl import crawl
-
     try:
-        sm = crawl(landing, depth=2, max_pages=15, headless=headless, skip=skip_link, cookies=ctx.cookies())
+        # crawl() drives Scrapling, which runs its own asyncio loop; the outer sync_playwright block is already in
+        # one, so run it on a separate thread to keep the two event loops from colliding. Snapshot cookies on this
+        # thread; the worker builds its own session and never touches the Playwright page/ctx.
+        cookies = ctx.cookies()
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            sm = ex.submit(crawl, landing, depth=2, max_pages=15, headless=headless,
+                           skip=skip_link, cookies=cookies).result(timeout=180)
         ok_pages = {u: p for u, p in sm["pages"].items() if "error" not in p}
-        routes = [{"path": urlsplit(u).path, "title": sec.redact(p["title"])[:80],
+        routes = [{"path": route(u), "title": sec.redact(p["title"])[:80],
                    "forms": sorted(f["classification"]["kind"] for f in p["forms"])} for u, p in ok_pages.items()]
         page.reload(wait_until="domcontentloaded", timeout=15000)  # re-ask the server: did the crawl end the session?
         _settle(page)
@@ -85,7 +91,7 @@ def session_signals(page, ctx, base_cookies, login_path):
     """Evidence of an authenticated session. Names/booleans only, never values."""
     return {"logout_control": _logout_control(page) is not None,
             "me_user": _me(page),
-            "left_login_page": urlsplit(page.url).path.rstrip("/") != login_path.rstrip("/"),
+            "left_login_page": route(page.url).rstrip("/") != login_path.rstrip("/"),
             "browser_state_set": bool(set(_cookie_hashes(ctx)) - base_cookies)}
 
 
@@ -191,8 +197,8 @@ def login_once(page, ctx, login_url, creds, label="login"):
         _settle(page)
         if detect_captcha(page):
             return {"ok": False, "reason": "captcha_detected after submit; stopped", "roles": roles}
-        sig = session_signals(page, ctx, set(base), urlsplit(login_url).path)
-        res = {"ok": is_authenticated(sig), "signals": sig, "roles": roles, "final_path": urlsplit(page.url).path}
+        sig = session_signals(page, ctx, set(base), route(login_url))
+        res = {"ok": is_authenticated(sig), "signals": sig, "roles": roles, "final_path": route(page.url)}
         if res["ok"]:
             res["authenticated_html"] = capture_authenticated(page, label, creds)
         return res
@@ -260,7 +266,7 @@ def _e2e(url, headless, steps, info):
         return bool(ok)
 
     sm = crawl(url, depth=2, max_pages=25, headless=headless)
-    forms = {urlsplit(u).path: f["classification"]["kind"] for u, p in sm["pages"].items() for f in p.get("forms", [])}
+    forms = {route(u): f["classification"]["kind"] for u, p in sm["pages"].items() for f in p.get("forms", [])}
     info["routes"] = [{"path": k, "form": v} for k, v in forms.items()]
     login_url = next((u for u, p in sm["pages"].items() for f in p.get("forms", []) if f["classification"]["kind"] == "login"), None)
     if not step("discovery", login_url and "signup" in forms.values(), forms=forms, pages=len(sm["pages"])):
@@ -289,7 +295,7 @@ def _e2e(url, headless, steps, info):
             r = login_once(page, ctx, login_url, creds)
             pre = _cookie_hashes(ctx)
             if step("login", r["ok"], **{k: v for k, v in r.items() if k != "ok"}):
-                pc = post_login_crawl(page, ctx, urlsplit(login_url).path, page.url, headless)
+                pc = post_login_crawl(page, ctx, route(login_url), page.url, headless)
                 info["post_login_routes"] = pc.get("routes", [])
                 step("post_login_crawl", pc["ok"], **{k: v for k, v in pc.items() if k != "ok"})
                 lo = logout(page, ctx, pre)

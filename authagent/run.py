@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from . import auth
 from . import secrets as sec
 from .allowlist import HostRefused, check_url
+from .crawl import route
 
 ROOT = Path(__file__).resolve().parent.parent
 EXIT_OK, EXIT_FAIL, EXIT_REFUSED, EXIT_INCOMPLETE = 0, 1, 2, 3
@@ -15,10 +16,11 @@ EXIT_OK, EXIT_FAIL, EXIT_REFUSED, EXIT_INCOMPLETE = 0, 1, 2, 3
 
 def _clean_url(url, entry=None):
     p = urlsplit(url)
-    path = entry if entry else p.path
+    # route() drops the fragment and token-like query params on both the url and a caller-supplied --entry path
+    path = route("%s://%s/%s" % (p.scheme, p.netloc, entry.lstrip("/"))) if entry else route(url)
     if path and not path.startswith("/"):
         path = "/" + path
-    return f"{p.scheme}://{p.netloc}{path}"  # query/fragment dropped: they can carry tokens
+    return f"{p.scheme}://{p.netloc}{path}"
 
 
 def resolve_target(raw):
