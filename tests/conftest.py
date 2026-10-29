@@ -75,3 +75,10 @@ def site_email(mailpit):
 def _no_real_dotenv(tmp_path, monkeypatch):
     """Never read a developer's real .env; tests that need one set AUTHAGENT_DOTENV themselves."""
     monkeypatch.setenv("AUTHAGENT_DOTENV", str(tmp_path / "no-such.env"))
+
+
+@pytest.fixture(autouse=True)
+def _no_crawl_delay(monkeypatch):
+    """Drop the inter-fetch pacing delay so tests don't wait out the real burst-limit throttle."""
+    import authagent.crawl as crawl
+    monkeypatch.setattr(crawl, "CRAWL_DELAY", 0)

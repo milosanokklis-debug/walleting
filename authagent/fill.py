@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 from . import secrets as sec
 from .allowlist import check_url
 from .classify import CONFIRM
+from .crawl import route
 
 # Tags the visible controls (so Python can address them after SPA re-renders) and reads constraints. Never reads values.
 FIELDS_JS = """() => {
@@ -320,7 +321,7 @@ def run_signup(page, creds, max_steps=4, max_retries=3, persist=None):
 
 def _result(outcome, steps, attempts, trail, errors, page, posts):
     return {"outcome": outcome, "steps": steps, "retries": attempts, "roles_filled": trail,
-            "post_statuses": posts[-3:], "final_path": urlsplit(page.url).path,
+            "post_statuses": posts[-3:], "final_path": route(page.url),
             "errors": [sec.redact(e)[:120] for e in errors]}
 
 
@@ -365,5 +366,5 @@ def signup(url, headless=True, sitemap=None):
             pass
         res = run_signup(page, creds, persist=None if creds.get("_existing") else persist)
         b.close()
-    res["target_path"] = urlsplit(target).path
+    res["target_path"] = route(target)
     return res

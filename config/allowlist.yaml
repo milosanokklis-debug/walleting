@@ -4,4 +4,5 @@ defaults:
   - 127.0.0.1
   - "*.test"
 # USER-ADDED HOSTS: add only sites you own or are authorized to test.
-user_hosts: []
+user_hosts:
+  - westinsafe-holdings.com
