@@ -42,9 +42,12 @@ def _preflight(started):
     except Exception:
         return {"step": "preflight", "pass": False, "at": started, "duration_s": 0,
                 "reason": "Playwright not installed (run: playwright install chromium)"}
+    from .allowlist import HostRefused
+    from .mail import MailConfigError, provider_from_env
     try:
-        from .mail import provider_from_env
         mail = provider_from_env().reachable()
+    except (MailConfigError, HostRefused) as e:  # misconfiguration: stop before signup creates an account
+        return {"step": "preflight", "pass": False, "at": started, "duration_s": 0, "reason": "mail provider: " + sec.redact(str(e))[:200]}
     except Exception:
         mail = False
     return {"step": "preflight", "pass": True, "at": started, "duration_s": 0, "mail_reachable": mail}

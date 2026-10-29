@@ -202,7 +202,7 @@ def adjust_from_errors(errors, adj):
 
 
 def new_creds(domain=None):
-    c = sec.generate_creds(domain or sec.dotenv("MAIL_DOMAIN", "authagent.test"))
+    c = sec.generate_creds(domain or sec.dotenv("MAIL_DOMAIN") or "authagent.test")
     c["TEST_USERNAME"] = "agent_" + _s.token_hex(4)
     return c
 

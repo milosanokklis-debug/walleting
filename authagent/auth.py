@@ -305,9 +305,15 @@ def _email_step(url, signup_res, creds, headless, step):
     """If the post-signup page asks to check email / enter a code, complete it via the mail provider."""
     from playwright.sync_api import sync_playwright
 
+    from .allowlist import HostRefused
     from .crawl import guard_context
-    from .mail import complete_verification, provider_from_env
+    from .mail import MailConfigError, complete_verification, provider_from_env
 
+    try:
+        provider = provider_from_env()
+    except (MailConfigError, HostRefused) as e:
+        step("email_verify", False, reason="mail provider: " + sec.redact(str(e))[:200])
+        return False
     base = "{0.scheme}://{0.netloc}".format(urlsplit(url))
     with sync_playwright() as pw:
         b = pw.chromium.launch(headless=headless)
@@ -317,7 +323,7 @@ def _email_step(url, signup_res, creds, headless, step):
             page = ctx.new_page()
             page.goto(base + (signup_res.get("final_path") or "/"), wait_until="domcontentloaded", timeout=15000)
             _settle(page)
-            r = complete_verification(page, provider_from_env(), creds)
+            r = complete_verification(page, provider, creds)
         finally:
             b.close()
     ok = r.pop("ok")

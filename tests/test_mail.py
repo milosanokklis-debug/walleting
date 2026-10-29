@@ -236,10 +236,7 @@ class _Resp:
 
 def _cf(monkeypatch, tmp_path, base="https://mail.example.com"):
     from authagent.mail import CloudflareWorkerProvider
-    al = tmp_path / "al.yaml"
-    al.write_text("user_hosts: [mail.example.com]\n")
-    monkeypatch.setattr("authagent.allowlist.DEFAULT_PATH", al)
-    monkeypatch.setattr("authagent.allowlist.load_allowlist", lambda path=al: ["mail.example.com"])
+    monkeypatch.setattr("authagent.allowlist.load_allowlist", lambda *a: ["mail.example.com", "localhost"])
     return CloudflareWorkerProvider(base, "tok-Zz9-secret")
 
 
@@ -302,3 +299,31 @@ def test_provider_from_env(monkeypatch, tmp_path):
     _cf(monkeypatch, tmp_path)
     f.write_text("MAIL_PROVIDER=cloudflare\nMAIL_API_URL=https://mail.example.com\nMAIL_API_TOKEN=tok-env-456\n")
     assert isinstance(provider_from_env(), CloudflareWorkerProvider)
+
+
+def test_cloudflare_config_errors(monkeypatch, tmp_path):
+    from authagent.mail import CloudflareWorkerProvider, MailConfigError
+    _cf(monkeypatch, tmp_path)
+    for base, tok in [("", "tok-a-123"), ("https://mail.example.com", ""), ("http://mail.example.com", "tok-a-123")]:
+        with pytest.raises(MailConfigError):
+            CloudflareWorkerProvider(base, tok)
+    assert CloudflareWorkerProvider("http://localhost:8787", "tok-a-123")  # local wrangler dev is fine over http
+
+
+def test_cloudflare_refused_token_stops_polling(monkeypatch, tmp_path):
+    from authagent.mail import MailConfigError
+    p = _cf(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(requests, "get", lambda *a, **k: calls.append(1) or _Resp(401))
+    with pytest.raises(MailConfigError):
+        p.latest_message("a@b.c", timeout=5, interval=0)
+    assert len(calls) == 1
+
+
+def test_preflight_fails_on_mail_misconfig(monkeypatch, tmp_path):
+    from authagent.run import _preflight
+    f = tmp_path / "e.env"
+    f.write_text("MAIL_PROVIDER=cloudflare\n")
+    monkeypatch.setenv("AUTHAGENT_DOTENV", str(f))
+    r = _preflight("now")
+    assert r["pass"] is False and "MAIL_API_URL" in r["reason"]
