@@ -33,7 +33,8 @@ the right `--entry` path, delete a stale `.env.test`, or — only with the user'
 allowlist. If no input change fixes it, report the diagnosis; never fake a step.
 
 ## Guardrails — never override
-- **Never** solve or bypass a CAPTCHA or bot wall: report it as the failure reason and stop.
+- **Never** solve or bypass a CAPTCHA or bot wall: report it as the failure reason and stop. (Crawling uses
+  Scrapling's StealthySession with challenge solving off; that does not change this rule.)
 - **Never** print, echo, or paste credentials. The generated creds live in the gitignored `.env.test`; reuse
   them, never reveal them.
 - The allowlist is enforced in code and fails closed; a refusal is final.

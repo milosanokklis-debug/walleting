@@ -139,3 +139,20 @@ def test_captured_authenticated_html(ctxpage, tmp_path, monkeypatch):
     saved = (tmp_path / proof["path"].split("/")[-1]).read_text(encoding="utf-8")
     assert _re.search("log out", saved, _re.I) and proof["authed_marker"]["logout_control"] and proof["authed_marker"]["username_visible"]
     assert pw not in saved and "abc123tok" not in saved and proof["no_leak"]
+
+
+@pytest.mark.parametrize("url,text", [
+    ("http://a.test/logout", "x"), ("http://a.test/auth/sign_out", ""), ("http://a.test/x", "Log out"), ("http://a.test/x", "Sign-out"),
+    ("http://a.test/account/delete", ""), ("http://a.test/x", "Remove card"), ("http://a.test/x", "Deactivate"),
+    ("http://a.test/close-account", ""), ("http://a.test/x", "Close my account"),
+    ("http://a.test/account?action=logout", ""), ("http://a.test/?do=sign_out", ""),
+])
+def test_skip_link_blocks_logout_and_destructive(url, text):
+    from authagent.auth import skip_link
+    assert skip_link(url, text)
+
+
+@pytest.mark.parametrize("url,text", [("http://a.test/dashboard", "Home"), ("http://a.test/settings", "Settings"), ("http://a.test/", "")])
+def test_skip_link_allows_normal(url, text):
+    from authagent.auth import skip_link
+    assert not skip_link(url, text)
